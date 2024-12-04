@@ -1,0 +1,2 @@
+$ProgNameAssembly = [System.Reflection.Assembly]::Load([Convert]::FromBase64String("ENCODED_EXE"))
+[ProgName.Program]::Main("".Split())
